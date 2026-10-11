@@ -1,90 +1,106 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Sequence
+from pathlib import Path
 
-from data.providers.base import DataValidationError
+import pytest
 
-
-def to_ist(value: datetime | str) -> datetime:
-    """Return a timezone-aware datetime normalized to Asia/Kolkata."""
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value)
-        except ValueError as exc:
-            raise ValueError(f"Unsupported datetime string: {value!r}") from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone(timedelta(hours=5, minutes=30)))
-
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone(timedelta(hours=5, minutes=30)))
+from data.providers.csv_provider import CSVDataProvider
+from data.providers.synthetic_provider import SyntheticDataProvider
+from data.validation import to_ist, validate_candle_stream
 
 
-def validate_candle_stream(
-    candles: Sequence[dict],
-    *,
-    max_stale_minutes: int = 10,
-    now: datetime | None = None,
-) -> List[dict]:
-    """Validate a stream of candles and normalize timestamps to IST."""
-    if not candles:
-        raise DataValidationError("No candles were supplied")
-
-    normalized: List[dict] = []
-    previous_ts: datetime | None = None
-    current_time = now or datetime.now(timezone.utc)
-
-    for idx, candle in enumerate(candles):
-        if not isinstance(candle, dict):
-            raise DataValidationError(f"Candle at index {idx} is not a dictionary")
-
-        missing = [field for field in ("symbol", "timestamp", "open", "high", "low", "close", "volume") if field not in candle]
-        if missing:
-            raise DataValidationError(f"Candle at index {idx} is missing required fields: {missing}")
-
-        symbol = str(candle["symbol"]).strip()
-        if not symbol:
-            raise DataValidationError(f"Candle at index {idx} has empty symbol")
-
-        ts = to_ist(candle["timestamp"])
-        if previous_ts is not None and ts <= previous_ts:
-            raise DataValidationError(f"Candle timestamps are not strictly increasing for {symbol}")
-
-        open_price = float(candle["open"])
-        high_price = float(candle["high"])
-        low_price = float(candle["low"])
-        close_price = float(candle["close"])
-        volume = candle["volume"]
-
-        if not all(value > 0 for value in (open_price, high_price, low_price, close_price)):
-            raise DataValidationError(f"Candle for {symbol} at {ts.isoformat()} must have positive OHLC values")
-        if high_price < max(open_price, close_price):
-            raise DataValidationError(f"High price is below the candle body for {symbol} at {ts.isoformat()}")
-        if low_price > min(open_price, close_price):
-            raise DataValidationError(f"Low price exceeds the candle body for {symbol} at {ts.isoformat()}")
-        if volume is None or float(volume) < 0:
-            raise DataValidationError(f"Volume for {symbol} at {ts.isoformat()} is invalid")
-
-        age_minutes = (current_time.astimezone(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() / 60.0
-        if age_minutes > max_stale_minutes:
-            raise DataValidationError(f"Candle for {symbol} at {ts.isoformat()} is stale (> {max_stale_minutes} minutes)")
-
-        normalized.append(
-            {
-                "symbol": symbol,
-                "timestamp": ts,
-                "open": open_price,
-                "high": high_price,
-                "low": low_price,
-                "close": close_price,
-                "volume": float(volume),
-            }
-        )
-        previous_ts = ts
-
-    return normalized
+@pytest.fixture
+def sample_candles():
+    now = datetime.now(timezone.utc)
+    return [
+        {
+            "symbol": "RELIANCE",
+            "timestamp": (now - timedelta(minutes=3)).isoformat(),
+            "open": 100.0,
+            "high": 101.5,
+            "low": 99.5,
+            "close": 101.0,
+            "volume": 1500.0,
+        },
+        {
+            "symbol": "RELIANCE",
+            "timestamp": (now - timedelta(minutes=2)).isoformat(),
+            "open": 101.0,
+            "high": 102.0,
+            "low": 100.5,
+            "close": 101.8,
+            "volume": 1700.0,
+        },
+    ]
 
 
-__all__ = ["to_ist", "validate_candle_stream"]
+def test_validate_candle_stream_accepts_valid_batch(sample_candles):
+    result = validate_candle_stream(sample_candles, max_stale_minutes=30)
+    assert len(result) == 2
+    assert result[0]["symbol"] == "RELIANCE"
+
+
+def test_validate_candle_stream_rejects_duplicates():
+    candles = [
+        {"symbol": "TCS", "timestamp": "2024-01-02T09:15:00+00:00", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000.0},
+        {"symbol": "TCS", "timestamp": "2024-01-02T09:15:00+00:00", "open": 100.5, "high": 101.2, "low": 99.8, "close": 101.0, "volume": 1050.0},
+    ]
+    with pytest.raises(ValueError):
+        validate_candle_stream(candles, max_stale_minutes=30)
+
+
+def test_validate_candle_stream_rejects_invalid_ohlc():
+    candles = [
+        {"symbol": "ICICIBANK", "timestamp": "2024-01-02T09:15:00+00:00", "open": 100.0, "high": 95.0, "low": 94.0, "close": 99.0, "volume": 800.0},
+    ]
+    with pytest.raises(ValueError):
+        validate_candle_stream(candles, max_stale_minutes=30)
+
+
+def test_to_ist_converts_utc_to_indian_time():
+    utc_time = datetime(2024, 1, 2, 9, 15, tzinfo=timezone.utc)
+    ist_time = to_ist(utc_time)
+    assert ist_time.tzinfo is not None
+    assert ist_time.utcoffset().total_seconds() == 5 * 3600 + 30 * 60
+
+
+def test_synthetic_provider_returns_ordered_candles():
+    provider = SyntheticDataProvider(seed=42)
+    candles = provider.fetch_candles("RELIANCE", start="2024-01-02T09:15:00", end="2024-01-02T09:17:00")
+    assert len(candles) == 3
+    assert candles[0]["symbol"] == "RELIANCE"
+    assert candles[0]["timestamp"] <= candles[-1]["timestamp"]
+
+
+def test_csv_provider_loads_csv_rows(tmp_path):
+    csv_file = tmp_path / "RELIANCE.csv"
+    csv_file.write_text(
+        "symbol,timestamp,open,high,low,close,volume\n"
+        "RELIANCE,2024-01-02T09:15:00+00:00,100,101,99,100.5,1000\n"
+        "RELIANCE,2024-01-02T09:16:00+00:00,100.5,101.5,99.8,101.2,1100\n",
+        encoding="utf-8",
+    )
+    provider = CSVDataProvider(tmp_path)
+    rows = provider.fetch_candles("RELIANCE")
+    assert len(rows) == 2
+    assert rows[0]["symbol"] == "RELIANCE"
+    assert rows[0]["timestamp"] <= rows[-1]["timestamp"]
+
+
+def test_csv_provider_supports_time_filter(tmp_path):
+    csv_file = tmp_path / "TCS.csv"
+    csv_file.write_text(
+        "symbol,timestamp,open,high,low,close,volume\n"
+        "TCS,2024-01-02T09:15:00+00:00,101,102,100,101.5,2000\n"
+        "TCS,2024-01-02T09:16:00+00:00,101.5,102.3,100.9,102.1,2200\n"
+        "TCS,2024-01-02T09:17:00+00:00,102.1,103.0,101.4,102.8,2400\n",
+        encoding="utf-8",
+    )
+    provider = CSVDataProvider(tmp_path)
+    rows = provider.fetch_candles("TCS", start="2024-01-02T09:16:00+00:00", end="2024-01-02T09:17:00+00:00")
+    assert len(rows) == 2
+    assert rows[0]["timestamp"].isoformat() == "2024-01-02T09:16:00+00:00"
+
+
+__all__ = ["sample_candles"]
