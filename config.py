@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 
