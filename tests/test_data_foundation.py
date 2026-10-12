@@ -1,3 +1,5 @@
+import sys
+import types
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -6,6 +8,37 @@ import pytest
 from data.providers.csv_provider import CSVDataProvider
 from data.providers.synthetic_provider import SyntheticDataProvider
 from data.validation import CandleValidationError, normalize_timestamp, validate_candle, validate_candles
+
+
+def test_yahoo_provider_reads_dataframe_rows(monkeypatch):
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, *, interval, start, end, auto_adjust):
+            return pd.DataFrame(
+                [
+                    {
+                        "Open": 100.0,
+                        "High": 101.0,
+                        "Low": 99.5,
+                        "Close": 100.8,
+                        "Volume": 1200,
+                    }
+                ],
+                index=pd.to_datetime(["2024-01-01 09:15:00"]),
+            )
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=FakeTicker))
+
+    from data.providers.yfinance_provider import YahooFinanceProvider
+
+    provider = YahooFinanceProvider()
+    candles = provider.fetch_candles("RELIANCE", interval="1m", start="2024-01-01", end="2024-01-02")
+
+    assert len(candles) == 1
+    assert candles[0]["symbol"] == "RELIANCE"
+    assert candles[0]["close"] == 100.8
 
 
 def test_normalize_timestamp_uses_ist():

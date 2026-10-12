@@ -39,11 +39,45 @@ class Settings:
             "ITC",
             "KOTAKBANK",
             "AXISBANK",
+            "BHARTIARTL",
+            "LT",
+            "MARUTI",
+            "M&M",
+            "SUNPHARMA",
+            "TATAMOTORS",
+            "BAJFINANCE",
+            "HINDUNILVR",
+            "ADANIENT",
+            "TITAN",
         ]
     )
 
 
 def build_settings() -> Settings:
+    default_universe = [
+        "RELIANCE",
+        "TCS",
+        "INFY",
+        "HDFCBANK",
+        "ICICIBANK",
+        "SBIN",
+        "LTIM",
+        "ITC",
+        "KOTAKBANK",
+        "AXISBANK",
+        "BHARTIARTL",
+        "LT",
+        "MARUTI",
+        "M&M",
+        "SUNPHARMA",
+        "TATAMOTORS",
+        "BAJFINANCE",
+        "HINDUNILVR",
+        "ADANIENT",
+        "TITAN",
+    ]
+    universe_value = os.getenv("UNIVERSE")
+    universe = [item.strip() for item in universe_value.split(",") if item.strip()] if universe_value else default_universe
     return Settings(
         project_name=os.getenv("PROJECT_NAME", "nse_intraday_prediction_engine"),
         data_dir=Path(os.getenv("DATA_DIR", "data")),
@@ -60,7 +94,7 @@ def build_settings() -> Settings:
         fyers_api_secret=os.getenv("FYERS_API_SECRET"),
         fyers_access_token=os.getenv("FYERS_ACCESS_TOKEN"),
         fyers_base_url=os.getenv("FYERS_BASE_URL", "https://api.fyers.in"),
-        universe=[item.strip() for item in os.getenv("UNIVERSE", "").split(",") if item.strip()],
+        universe=universe,
     )
 
 
